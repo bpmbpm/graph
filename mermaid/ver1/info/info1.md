@@ -259,3 +259,185 @@ flowchart TD
 - Не используйте `securityLevel: "loose"` для диаграмм, которые могут редактировать недоверенные пользователи: этот режим разрешает HTML в подписях и click-функциональность. [mermaid](https://mermaid.ai/open-source/config/usage.html)
 - Для вашего случая я бы начал с **варианта A**: один `index.html`, один `viewer.js`, а `test.md` остается источником графа. Позже, если потребуется, добавите `build.mjs` или GitHub Action для варианта B.
   
+## 1.2
+
+Да. **Через браузерный JS можно**, но локальный `.md` нельзя просто открыть через `fetch("./test.md")` при запуске файла по `file://` — браузер блокирует такой доступ из-за политики origin/CORS. Вместо этого пользователь выбирает файл через `<input type="file">` или перетаскивает его в окно; тогда JS получает `File` и читает его через `FileReader` или `file.text()`. [developer.mozilla](https://developer.mozilla.org/en-US/docs/Web/API/FileReader)
+
+## Варианты запуска
+
+| Вариант | Как запускается | Нужен сервер | Нужен Node/build | Может читать `test.md` рядом с HTML | Удобство |
+|---|---|---:|---:|---|---|
+| **1. HTML + выбор файла** | Двойной клик по `index.html`, затем выбрать `test.md` | Нет | Нет | Да, после выбора пользователем | **Самый простой** |
+| **2. HTML + drag & drop** | Перетащить `test.md` на открытую страницу | Нет | Нет | Да | Очень удобно |
+| **3. HTML + `fetch()`** | Открыть `index.html` через GitHub Pages или локальный сервер | Для локального `fetch` — да | Нет | Да | Удобно онлайн, но не по `file://` |
+| **4. Node-препроцессор `build.mjs`** | `node build.mjs`, затем открыть `test.html` | Нет | Да | Да, на этапе сборки | Хорош для публикации |
+| **5. Electron / Tauri** | Отдельное desktop-приложение | Нет | Да | Да, с правами приложения | Для постоянного локального инструмента |
+
+Для вашей задачи — «открыть `test.md`, увидеть интерактивный Mermaid» — я бы выбрал **вариант 2: drag & drop**. Он работает без сервера, без Node и без пересборки.
+
+## Почему `fetch` не сработает локально
+
+Когда вы открываете `index.html` двойным кликом, страница имеет origin `file://`. JavaScript обычно не может выполнить `fetch("./test.md")` к соседнему локальному файлу: браузеры ограничивают доступ к файловой системе; для серверных файлов `fetch` требует CORS-разрешение. [developer.mozilla](https://developer.mozilla.org/en-US/docs/Web/API/FileReader)
+
+Однако когда пользователь сам выбирает файл в `<input type="file">` или бросает его на страницу, браузер предоставляет странице объект `File`; его содержимое можно прочитать в JS. [developer.mozilla](https://developer.mozilla.org/en-US/docs/Web/API/File_API)
+
+## Самый простой вариант: drag & drop
+
+Сделайте один файл `viewer.html` — без отдельных `viewer.js`, без сборки и без сервера:
+
+```html
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<title>Interactive Mermaid Viewer</title>
+<script src="https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+<style>
+  body { font-family: system-ui, sans-serif; margin: 24px; }
+  #drop {
+    border: 2px dashed #888;
+    padding: 40px;
+    text-align: center;
+    border-radius: 12px;
+  }
+  #graph svg { max-width: 100%; height: auto; }
+</style>
+</head>
+<body>
+
+<div id="drop">
+  Перетащите сюда <b>test.md</b><br>
+  или <input type="file" id="file" accept=".md,.markdown,.txt">
+</div>
+
+<div id="content"></div>
+
+<script>
+mermaid.initialize({
+  startOnLoad: false,
+  securityLevel: "loose"
+});
+
+// Функция вызывается из Mermaid:
+// click B call toggleNode()
+window.toggleNode = function (nodeId) {
+  const svg = document.querySelector("#content svg");
+  if (!svg) return;
+
+  // Пример: узел B скрывает/показывает ветку C и D.
+  ["C", "D"].forEach(function (id) {
+    const node =
+      svg.querySelector(`g[data-id="${id}"]`) ||
+      svg.querySelector(`#${CSS.escape("flowchart-" + id)}`);
+
+    if (node) {
+      node.style.display =
+        node.style.display === "none" ? "" : "none";
+    }
+  });
+};
+
+async function showMarkdown(text) {
+  const container = document.getElementById("content");
+  container.innerHTML = marked.parse(text);
+
+  await mermaid.run({
+    querySelector:
+      "#content .mermaid, #content pre code.language-mermaid"
+  });
+}
+
+document.getElementById("file")
+  .addEventListener("change", async (event) => {
+    const file = event.target.files[0];
+    if (file) {
+      showMarkdown(await file.text());
+    }
+  });
+
+const drop = document.getElementById("drop");
+
+drop.addEventListener("dragover", (event) => {
+  event.preventDefault();
+});
+
+drop.addEventListener("drop", async (event) => {
+  event.preventDefault();
+
+  const file = event.dataTransfer.files[0];
+  if (file) {
+    showMarkdown(await file.text());
+  }
+});
+</script>
+
+</body>
+</html>
+```
+
+Положите `viewer.html` и `test.md` в одну папку, откройте `viewer.html` двойным щелчком и перетащите `test.md` в пунктирную область. Никакого сервера, Node, `npm install` или `build.mjs` не требуется.
+
+## Как задать expand/collapse в `test.md`
+
+В `test.md` оставляете обычный блок:
+
+````md
+# Тестовый граф
+
+```mermaid
+flowchart TD
+    A[Начало] --> B[Раздел]
+    B --> C[Деталь 1]
+    B --> D[Деталь 2]
+
+    click B call toggleNode()
+```
+````
+
+Mermaid поддерживает `click nodeId call callback()`; callback получает id узла и должен быть определен на странице. Эта возможность включается при `securityLevel: "loose"` и отключена в `strict`. [mermaid.js](https://mermaid.js.org/syntax/flowchart.html)
+
+Для более «настоящего» collapse лучше не прятать отдельные SVG-узлы, а держать две версии Mermaid-кода и перерисовывать диаграмму:
+
+```js
+const diagrams = {
+  collapsed: `
+flowchart TD
+  A[Начало] --> B[Раздел]
+  click B call toggleBranch()
+`,
+  expanded: `
+flowchart TD
+  A[Начало] --> B[Раздел]
+  B --> C[Деталь 1]
+  B --> D[Деталь 2]
+  click B call toggleBranch()
+`
+};
+
+let expanded = false;
+
+window.toggleBranch = async function () {
+  expanded = !expanded;
+
+  const container = document.getElementById("content");
+  const { svg } = await mermaid.render(
+    "graph-" + Date.now(),
+    expanded ? diagrams.expanded : diagrams.collapsed
+  );
+
+  container.querySelector(".mermaid, pre").outerHTML =
+    `<div class="mermaid">${svg}</div>`;
+};
+```
+
+Это надежнее по отображению связей, но требует, чтобы логика expand/collapse была описана в JS, а не только внутри Markdown.
+
+## Desktop без сервера
+
+- **Обычный браузер + drag & drop** — уже является desktop-режимом в широком смысле: вы запускаете `viewer.html` локально, без веб-сервера.
+- **Electron** — полноценное настольное приложение на Chromium; может читать локальные файлы через Node/fs и открывать `test.md` напрямую.
+- **Tauri** — более легковесная альтернатива Electron; также предназначена для локальных desktop-приложений с веб-интерфейсом.
+- **VS Code / расширение** — можно сделать расширение, которое открывает `.md`, рендерит Mermaid и добавляет собственные кнопки/клики; это удобно, но заметно сложнее одного HTML-файла.
+
+Для первого прототипа достаточно **одного `viewer.html` с drag & drop**. Когда формат взаимодействия устоится, его же можно превратить в Electron/Tauri-приложение или в Node-сборщик для GitHub Pages.
